@@ -1,16 +1,1 @@
-{
-  "keys": [
-    {
-      "crv": "Ed25519",
-      "x": "laB-mBzp_fQBw5zKY9qunhOPgUHiMSaVS94EwZTsFPk",
-      "kty": "OKP",
-      "kid": "2026-06-26_4c2",
-      "alg": "EdDSA",
-      "use": "sig",
-      "aauth": {
-        "device": "vasupc",
-        "created": "2026-06-26"
-      }
-    }
-  ]
-}
+{"keys":[{"crv":"Ed25519","x":"KDWx-kir-DzWhgyLrOwUFqOjhDmuOgcD8x9eZHL1xlw","kty":"OKP","kid":"2026-06-26_53f","alg":"EdDSA","use":"sig","aauth":{"device":"vasupc","created":"2026-06-26"}}]} 
