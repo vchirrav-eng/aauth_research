@@ -1,0 +1,5 @@
+{
+  "issuer": "https://vchirrav.github.io",
+  "jwks_uri": "https://vchirrav.github.io/.well-known/jwks.json",
+  "client_name": "vchirrav"
+}
