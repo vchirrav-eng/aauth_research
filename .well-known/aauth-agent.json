@@ -1,5 +1,1 @@
-{
-  "issuer": "https://vchirrav-eng.github.io/aauth_research",
-  "jwks_uri": "https://vchirrav-eng.github.io/aauth_research/.well-known/jwks.json",
-  "client_name": "vchirrav-eng"
-}
+{  "issuer": "https://vchirrav-eng.github.io/aauth_research",  "jwks_uri": "https://vchirrav-eng.github.io/aauth_research/.well-known/jwks.json",  "client_name": "vchirrav-eng"} 
