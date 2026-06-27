@@ -50,44 +50,16 @@ How the agent reaches a protected MCP / API server under each mechanism, step by
 
 ![Agent to MCP / API server with AAuth](img/05-aauth.png)
 
-## AAuth access modes
+## AAuth access modes — when to use which
 
-AAuth defines four resource-access modes, from simple identity verification to full
-four-party federation. The wire protocol is the same throughout — the difference is what
-the resource returns in its `401`/`202` challenge and which party mints the eventual auth
-token. Each mode is independently deployable. Source: <https://explorer.aauth.dev/access/compare>
+AAuth has four resource-access modes (same wire protocol throughout — the difference is which
+party mints the auth token). Pick by the single situation each one fits best:
 
-| Mode | Parties | Tokens | Infrastructure | Best for |
-|---|---|---|---|---|
-| **Identity-Based** | Agent + Resource | `aa-agent+jwt` | None — just the agent and resource | Replacing API keys with cryptographic identity |
-| **Resource-Managed** | Two-party | `aa-agent+jwt`, `AAuth-Access` (opaque) | Resource handles auth itself (interaction, OAuth/OIDC, internal policy) | Resource manages authorization without an external PS or AS |
-| **PS-Asserted** | Three-party | `aa-agent+jwt`, `aa-resource+jwt`, `aa-auth+jwt` (from PS) | Person Server (no Access Server) | Resource accepts identity claims (`sub`, `email`, `tenant`, groups, roles) from any PS |
-| **Federated** | Four-party | `aa-agent+jwt`, `aa-resource+jwt`, `aa-auth+jwt` (from AS) | Person Server + Access Server, PS–AS trust (pre-established or dynamic) | Cross-domain access with the resource's AS enforcing policy |
+| Mode | Parties | Best use case |
+|---|---|---|
+| **Identity-Based** | Agent + Resource | Replace API keys with cryptographic agent identity — no extra infrastructure |
+| **Resource-Managed** | Two-party | The resource runs its own authorization/consent and wants no external person server or access server |
+| **PS-Asserted** | Three-party | The resource trusts identity claims (`sub`, `email`, `tenant`, roles) asserted by any person server |
+| **Federated** | Four-party | Cross-domain access where the resource's own access server enforces policy |
 
-### 1. Identity-Based — Agent + Resource ([live demo](https://explorer.aauth.dev/access/identity-based))
-
-1. **Agent → Resource** — HTTPSig w/ agent token
-2. **Resource → Agent** — 200 OK (access decision by agent identity)
-
-### 2. Resource-Managed — Two-Party ([live demo](https://explorer.aauth.dev/access/resource-managed))
-
-1. **Agent → Resource** — HTTPSig w/ agent token
-2. **Resource → Agent** — 202 + `AAuth-Requirement: interaction`
-3. **User → Resource** — completes interaction at resource's own page
-4. **Agent → Resource** — poll → 200 + `AAuth-Access` (opaque token)
-5. **Agent → Resource** — subsequent calls: `Authorization: AAuth <token>`
-
-### 3. PS-Asserted — Three-Party ([live demo](https://explorer.aauth.dev/access/ps-asserted))
-
-1. **Agent → Resource** — HTTPSig → 401 + resource token (`aud=PS`)
-2. **Agent → PS** — POST `/token` w/ resource token
-3. **PS → Agent** — auth token (`iss=PS`, `dwk=aauth-person.json`)
-4. **Agent → Resource** — present auth token → 200
-
-### 4. Federated — Four-Party ([live demo](https://explorer.aauth.dev/access/federated))
-
-1. **Agent → Resource** — HTTPSig → 401 + resource token (`aud=AS`)
-2. **Agent → PS** — POST `/token` w/ resource token
-3. **PS → AS** — PS federates: POST `/token` (signed)
-4. **AS → PS → Agent** — auth token (`iss=AS`, `dwk=aauth-access.json`)
-5. **Agent → Resource** — present auth token → 200
+Source: <https://explorer.aauth.dev/access/compare>
