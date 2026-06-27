@@ -25,3 +25,27 @@ OAuth/OIDC, JWT-SVID) means possession = use. A token **bound to a key the calle
 possession of** — mTLS at the channel level, AAuth at the message level — removes that
 weakness. AAuth uses the same JWT format as OAuth but stops handing it over as a bearer;
 that's the whole difference.
+
+## Workflows — agent to MCP / API server
+
+How the agent reaches a protected MCP / API server under each mechanism, step by step.
+
+### API keys
+
+![Agent to MCP / API server with API keys](img/01-api-keys.png)
+
+### OAuth 2.1 / OIDC
+
+![Agent to MCP / API server with OAuth / OIDC](img/02-oauth-oidc.png)
+
+### mTLS
+
+![Agent to MCP / API server with mTLS](img/03-mtls.png)
+
+### SPIFFE / SPIRE
+
+![Agent to MCP / API server with SPIFFE / SPIRE](img/04-spiffe-spire.png)
+
+### AAuth
+
+![Agent to MCP / API server with AAuth](img/05-aauth.png)
