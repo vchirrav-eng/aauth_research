@@ -50,6 +50,22 @@ How the agent reaches a protected MCP / API server under each mechanism, step by
 
 ![Agent to MCP / API server with AAuth](img/05-aauth.png)
 
+## OAuth 2.1 / OIDC vs. AAuth — the two flows side by side
+
+Reading the two diagrams above against each other, step for step:
+
+| Aspect | OAuth 2.1 / OIDC | AAuth (PS-asserted) |
+|---|---|---|
+| **Parties on the wire** | User, Agent, Authorization Server, MCP/API Server (4 actors) | Agent, Person Server, MCP/Resource (3 actors) |
+| **How the flow starts** | Agent redirects to `/authorize` with a PKCE `code_challenge` | Agent makes the actual signed request to the resource right away |
+| **Where the human consents** | Up front, in a browser at the Authorization Server (step 2) | After the resource asks — agent POSTs the resource-token, person consents at the Person Server |
+| **Credential the resource receives** | A **bearer** access-token JWT in `Authorization: Bearer …` | A **per-request RFC 9421 signature** (`Signature` + `Signature-Key`), never handed over as bearer |
+| **Token format on the call** | `access_token` JWT (`aud:mcp, scope, exp`) | JWT carried in `Signature-Key`: `aa-agent+jwt`, then person-issued `aa-auth+jwt` |
+| **Proof of possession** | None — whoever holds the token can replay it | Signed with the agent's key on **every** request; bound to the caller's key |
+| **Round trips before resource is called** | Authorize → consent → code → `/token` exchange, *then* call | Call → 401 + resource-token → consent at PS → re-call with auth-token |
+| **What the resource learns** | Claims inside the bearer JWT, validated via JWKS (RFC 9728 metadata) | `sub`, `agent`, `name`, `email` — identity claims asserted by the Person Server |
+| **Non-repudiation** | Bearer ceiling — a stolen token is indistinguishable from the real caller | Strong — each request is a detached signature, a durable per-call artifact |
+
 ## AAuth access modes — when to use which
 
 AAuth has four resource-access modes (same wire protocol throughout — the difference is which
