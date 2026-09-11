@@ -26,6 +26,14 @@ possession of** — mTLS at the channel level, AAuth at the message level — re
 weakness. AAuth uses the same JWT format as OAuth but stops handing it over as a bearer;
 that's the whole difference.
 
+## Server-side code — [`src/`](src/)
+
+Runnable MCP servers for each mechanism below, enforcing **authentication** (which MCP client,
+which user) and **authorization** (may that pair use this tool / resource / prompt) with **no MCP
+gateway** — the server itself is the policy enforcement point. Same policy table and same
+primitives throughout, so the only thing that differs is what each mechanism lets the server
+learn about its caller. See [`src/README.md`](src/README.md).
+
 ## Workflows — agent to MCP / API server
 
 How the agent reaches a protected MCP / API server under each mechanism, step by step.

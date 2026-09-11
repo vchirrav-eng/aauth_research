@@ -1,0 +1,17 @@
+{
+  "_comment": "RFC 9728 protected-resource metadata. With no MCP gateway in front, the MCP server publishes this itself at /.well-known/oauth-protected-resource. An MCP client that gets a 401 reads the WWW-Authenticate header, fetches this document, and learns which authorization server to run its PKCE flow against.",
+  "resource": "https://mcp.example.com",
+  "authorization_servers": [
+    "https://as.example.com"
+  ],
+  "scopes_supported": [
+    "reports:read",
+    "inbox:read",
+    "notes:read",
+    "payments:write"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "resource_documentation": "https://mcp.example.com/docs"
+}
