@@ -14,9 +14,12 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Ordered so each mechanism builds on the previous one -- DPoP directly follows
+# the OAuth it upgrades, rather than sorting by folder number.
 EXAMPLES = [
     ("01-api-keys", None),
     ("02-oauth-oidc", None),
+    ("06-oauth-dpop", "cryptography"),
     ("03-mtls", None),
     ("04-spiffe-spire", None),
     ("05-aauth", "cryptography"),

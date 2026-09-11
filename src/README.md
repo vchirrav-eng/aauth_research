@@ -17,6 +17,7 @@ src/
 ├── _common/          policy.py (shared authz) + mcp_server.py (shared MCP core)
 ├── 01-api-keys/      shared secret          — client only, no user
 ├── 02-oauth-oidc/    bearer access token    — client + user, but stealable
+├── 06-oauth-dpop/    DPoP-bound token       — same OAuth, no longer stealable
 ├── 03-mtls/          client certificate     — strong, machine only, channel-scoped
 ├── 04-spiffe-spire/  X.509-SVID / JWT-SVID  — attested workload, still no user
 └── 05-aauth/         RFC 9421 signature     — agent + person, bound, non-repudiable
@@ -24,17 +25,18 @@ src/
 
 ## Run them
 
-Python 3.9+. Only `05-aauth` needs a dependency (`pip install cryptography`) because it performs
-**real Ed25519 verification** rather than faking it.
+Python 3.9+. `05-aauth` and `06-oauth-dpop` need one dependency (`pip install cryptography`) because they
+perform **real Ed25519 verification** rather than faking it.
 
 ```bash
 python src/01-api-keys/server.py
 python src/02-oauth-oidc/server.py
+python src/06-oauth-dpop/server.py
 python src/03-mtls/server.py
 python src/04-spiffe-spire/server.py
 python src/05-aauth/server.py
 
-python src/run_all.py        # all five, back to back
+python src/run_all.py        # all six, back to back
 ```
 
 Each prints a labelled ALLOW/DENY trace for success cases *and* attack cases (stolen token,
@@ -42,10 +44,10 @@ wrong audience, replay, tampered body).
 
 ## Why the authorization code is shared
 
-`_common/policy.py` holds one policy table and one `authorize()` used by all five servers, so the
+`_common/policy.py` holds one policy table and one `authorize()` used by all six servers, so the
 **only** thing that differs between the folders is the `authenticate()` function. That is the
 whole point: authorization is largely a solved, mechanism-independent problem — what actually
-separates these five is *what the server is able to learn about the caller*, and *how hard that
+separates these six is *what the server is able to learn about the caller*, and *how hard that
 claim is to forge*.
 
 The same three primitives are exposed everywhere:
@@ -67,11 +69,12 @@ The same three primitives are exposed everywhere:
 |---|---|---|---|---|---|
 | **API keys** | account, coarse | **none** | a shared secret | yes, until rotated | no |
 | **OAuth 2.1 / OIDC** | `client_id` | `sub` + consent | issuance, not possession | **yes** — bearer | no |
+| **OAuth + DPoP** | `client_id` | `sub` + consent | **possession, per request** | **no** — `cnf.jkt`-bound | yes — but not over the body |
 | **mTLS** | cert subject | **none** | key possession, at handshake | no (needs the key) | no — channel only |
 | **SPIFFE / SPIRE** | SPIFFE ID, attested | **none** | X.509 possession *or* bearer JWT | X.509 no / JWT-SVID yes | no |
 | **AAuth** | agent, from published key | `sub` via person server | **possession, per request** | **no** — `cnf`-bound | **yes — a signature** |
 
-Three of the five cannot carry a user at all. In those servers every user-scoped primitive is
+Three of the six cannot carry a user at all. In those servers every user-scoped primitive is
 denied — and `tools/list` doesn't even advertise them, since showing an agent a tool it can never
 call only invites it to plan around a guaranteed failure.
 
@@ -84,10 +87,34 @@ The root README's point that **"is it a JWT" is unrelated to strength** is visib
 - `04-spiffe-spire` implements **both** SVID types side by side, and the **X.509-SVID (not a
   JWT) is stronger than the JWT-SVID (a JWT)** — the bearer form is replayable for its lifetime.
 
-What actually moves the needle is **bearer vs. bound**, which shows up as one specific check in
-`05-aauth/server.py`: the request signature is verified against the key named in the token's
-`cnf` claim. A stolen AAuth token is inert without the matching private key — the demo proves
-this by replaying a valid token with an attacker's key and watching it fail.
+What actually moves the needle is **bearer vs. bound**, and it shows up as one specific check in
+two different folders:
+
+```python
+# 06-oauth-dpop: proof key thumbprint must equal the token's cnf.jkt
+if not hmac.compare_digest(_jkt(jwk), bound_jkt): ...
+
+# 05-aauth: the request signature must verify against the key in cnf
+verify_key.verify(presented, base)
+```
+
+Both demos steal a valid token, present it with an attacker's key, and watch it fail.
+
+### What the proof covers is the next question
+
+Once two mechanisms are bound, "bound or not" stops being the interesting axis — **what the
+signature covers** takes over:
+
+| | Covers method + URI | Covers the token | Covers the **body** |
+|---|---|---|---|
+| **DPoP** | yes (`htm` / `htu`) | yes (`ath`) | **no** |
+| **AAuth** | yes (`@method` / `@authority` / `@path`) | yes (`signature-key` covered) | **yes**, via `content-digest` |
+
+That gap is concrete for MCP, where every `tools/call` shares one method and URI.
+`06-oauth-dpop` demonstrates it: the body is swapped `read_inbox` → `send_payment` with the proof
+untouched, and **the proof still verifies** — the call is stopped only by the authorization step,
+because that user happened to lack `payments:write`. `05-aauth` rejects the same tampering at the
+authentication step, because the digest is signed.
 
 ## Where the checks live in a real MCP server
 
