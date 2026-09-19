@@ -1,4 +1,4 @@
-"""A minimal MCP server core, shared by all five mechanism examples.
+"""A minimal MCP server core, shared by all six mechanism examples.
 
 Deliberately dependency-free: this is a teaching model of where the checks go in
 an MCP server, not a production framework. In a real build you would use the
@@ -29,7 +29,7 @@ class MCPServer:
     """MCP server whose authentication step is supplied by each mechanism.
 
     `authenticator(request)` -> Principal, or raises AuthenticationError.
-    That single injected function is the ONLY difference between the five
+    That single injected function is the ONLY difference between the six
     servers in this repo.
     """
 

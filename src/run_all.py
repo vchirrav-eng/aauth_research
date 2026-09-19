@@ -1,9 +1,9 @@
-"""Run all five MCP server examples back to back.
+"""Run all six MCP server examples back to back.
 
     python src/run_all.py
 
 Reading the output top to bottom is the point: the same policy table and the
-same primitives, gated by five different authentication mechanisms. Watch what
+same primitives, gated by six different authentication mechanisms. Watch what
 each server is able to learn about the caller -- and which user-scoped calls it
 therefore has to deny.
 """

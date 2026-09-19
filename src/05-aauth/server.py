@@ -43,7 +43,8 @@ not hold the matching private key: stealing the JWT gets an attacker nothing.
 This is the single line that turns a JWT from a bearer into a bound credential.
 """
 
-import sys, os, json, time, base64, hashlib, secrets
+import sys, os, json, time, base64, hashlib, secrets, urllib.request, hmac
+from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_common"))
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -61,6 +62,17 @@ MAX_SIGNATURE_AGE = 300          # seconds; bounds replay of a captured request
 # chose to trust this PS.
 TRUSTED_PERSON_SERVERS = {"https://person.hello.coop"}
 
+# In a deployed server these URLs are discovered once and their JWKS responses
+# cached by HTTP cache directives.  Tests and the executable demo inject local
+# public keys through this map; private keys never enter it.
+JWKS_URI = {
+    "https://vchirrav-eng.github.io/aauth_research":
+        "https://vchirrav-eng.github.io/aauth_research/.well-known/jwks.json",
+    "https://person.hello.coop": "https://person.hello.coop/.well-known/jwks.json",
+}
+_jwks_overrides = {}
+RESOURCE_SIGNING_KEY = Ed25519PrivateKey.generate()
+
 # Agent issuers we will talk to, and what the AGENT itself may do. The agent's
 # ceiling applies even after a person consents -- delegation cannot escalate.
 AGENT_POLICY = {
@@ -68,7 +80,7 @@ AGENT_POLICY = {
         "reports:read", "inbox:read", "notes:read"},
 }
 
-_seen_jti = set()               # replay cache; Redis with a TTL in production
+_seen_signatures = {}            # signature hash -> expiry; use Redis in production
 
 
 def _b64u(raw: bytes) -> str:
@@ -80,8 +92,45 @@ def _unb64u(s: str) -> bytes:
 
 
 def _jwt_parts(token: str):
-    h, p, s = token.split(".")
-    return json.loads(_unb64u(h)), json.loads(_unb64u(p)), (f"{h}.{p}".encode(), _unb64u(s))
+    try:
+        h, p, s = token.split(".")
+        return (json.loads(_unb64u(h)), json.loads(_unb64u(p)),
+                (f"{h}.{p}".encode(), _unb64u(s)))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuthenticationError("malformed JWT") from exc
+
+
+def _issuer_jwk(issuer: str, kid: str) -> dict:
+    """Resolve a signing key by issuer and key id, never from token input."""
+    try:
+        keys = _jwks_overrides.get(issuer)
+        if keys is None:
+            with urllib.request.urlopen(JWKS_URI[issuer], timeout=3) as response:
+                keys = json.load(response).get("keys", [])
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise AuthenticationError(f"unable to obtain JWKS for {issuer}") from exc
+    for jwk in keys:
+        if hmac.compare_digest(str(jwk.get("kid", "")), str(kid)):
+            return jwk
+    raise AuthenticationError(f"unknown signing key id {kid!r} for {issuer}")
+
+
+def _verify_jwt(token: str, expected_typ: str, expected_issuer: Optional[str] = None):
+    """Verify a compact EdDSA JWT before trusting any of its claims."""
+    header, claims, (signing_input, signature) = _jwt_parts(token)
+    issuer = claims.get("iss")
+    if not isinstance(issuer, str) or (expected_issuer and issuer != expected_issuer):
+        raise AuthenticationError("JWT issuer is missing or not trusted")
+    if header.get("typ") != expected_typ or header.get("alg") != "EdDSA":
+        raise AuthenticationError(f"unexpected JWT type or algorithm ({header.get('typ')}/{header.get('alg')})")
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise AuthenticationError("JWT has no signing key id")
+    try:
+        _jwk_to_key(_issuer_jwk(issuer, kid)).verify(signature, signing_input)
+    except InvalidSignature as exc:
+        raise AuthenticationError("JWT signature does not verify against the issuer JWKS") from exc
+    return header, claims
 
 
 def _jwk_to_key(jwk: dict) -> Ed25519PublicKey:
@@ -141,9 +190,10 @@ def mint_resource_token(agent_claims: dict, agent_jwk: dict, scope: str) -> str:
         "iat": now,
         "exp": now + 300,
     }
-    # Signed with the resource's own key (omitted here: the agent never
-    # verifies it -- the PS does, via our published aauth-resource.json).
-    return f"{_b64u(json.dumps(payload).encode())}.{_b64u(json.dumps(header).encode())}.demo"
+    # A real deployment loads this resource's protected signing key from its
+    # key manager.  The demo key is process-local solely so the emitted token
+    # is structurally and cryptographically a real compact JWS.
+    return _make_jwt(header, payload, RESOURCE_SIGNING_KEY)
 
 
 class AAuthRequired(AuthenticationError):
@@ -159,9 +209,12 @@ def authenticate(request) -> Principal:
 
     # --- 1. Parse Signature-Input: which components, and when ---------------
     sig_input = headers["signature-input"]
-    covered = [c.strip('"') for c in
-               sig_input.split("(", 1)[1].split(")", 1)[0].split()]
-    created = int(sig_input.split("created=")[1].split(";")[0].strip())
+    try:
+        covered = [c.strip('"') for c in
+                   sig_input.split("(", 1)[1].split(")", 1)[0].split()]
+        created = int(sig_input.split("created=")[1].split(";")[0].strip())
+    except (IndexError, ValueError) as exc:
+        raise AuthenticationError("malformed Signature-Input header") from exc
 
     # Freshness. A captured request is replayable only inside this window --
     # and only as the identical method+authority+path.
@@ -173,15 +226,30 @@ def authenticate(request) -> Principal:
 
     # `signature-key` MUST be covered, or the JWT could be swapped for another
     # while keeping a valid signature over the rest of the request.
-    if "signature-key" not in covered:
+    required_components = {"@method", "@authority", "@path", "signature-key", "content-digest"}
+    if not required_components <= set(covered):
         raise AuthenticationError(
-            "`signature-key` is not in the covered components -- the token could be swapped")
+            "Signature-Input must cover method, authority, path, signature-key, and content-digest")
 
     # --- 2. Extract the JWT from Signature-Key ------------------------------
     raw = headers["signature-key"]
-    token = raw.split('jwt="', 1)[1].rsplit('"', 1)[0]
-    header_j, claims, (signing_input, sig_bytes) = _jwt_parts(token)
+    try:
+        token = raw.split('jwt="', 1)[1].rsplit('"', 1)[0]
+    except IndexError as exc:
+        raise AuthenticationError("malformed Signature-Key header") from exc
+    header_j, unverified_claims, _ = _jwt_parts(token)
     typ = header_j.get("typ")
+    issuer = unverified_claims.get("iss")
+    if typ == "aa-agent+jwt":
+        if issuer not in AGENT_POLICY:
+            raise AuthenticationError(f"unknown agent issuer {issuer}")
+        header_j, claims = _verify_jwt(token, typ, issuer)
+    elif typ == "aa-auth+jwt":
+        if issuer not in TRUSTED_PERSON_SERVERS:
+            raise AuthenticationError(f"auth token issued by untrusted person server {issuer}")
+        header_j, claims = _verify_jwt(token, typ, issuer)
+    else:
+        raise AuthenticationError(f"unexpected token typ: {typ}")
 
     # --- 3. The cnf binding: which key must have signed this request? -------
     # Both token types carry `cnf.jwk`. THIS is the bound-vs-bearer line.
@@ -194,7 +262,10 @@ def authenticate(request) -> Principal:
     # RFC 9421 wraps the signature in colons as a byte-sequence literal,
     # standard-base64 encoded (not base64url).
     sig_hdr = headers["signature"]
-    presented = base64.b64decode(sig_hdr.split(":", 1)[1].rsplit(":", 1)[0])
+    try:
+        presented = base64.b64decode(sig_hdr.split(":", 1)[1].rsplit(":", 1)[0], validate=True)
+    except (IndexError, ValueError) as exc:
+        raise AuthenticationError("malformed Signature header") from exc
     base = _signature_base(request, covered, created)
     try:
         verify_key.verify(presented, base)
@@ -211,22 +282,25 @@ def authenticate(request) -> Principal:
     # If a content-digest was signed, it must match the body we actually got.
     # The signature covers the DIGEST header; only recomputing it over the real
     # payload ties the signature to this request's content.
-    if "content-digest" in covered:
-        body = {k: request[k] for k in ("jsonrpc", "id", "method", "params")
-                if k in request}
-        raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
-        want = base64.b64encode(hashlib.sha256(raw).digest()).decode()
-        got = headers.get("content-digest", "")
-        if f"sha-256=:{want}:" != got:
-            raise AuthenticationError(
-                "content-digest does not match the request body -- payload altered in flight")
+    body = {k: request[k] for k in ("jsonrpc", "id", "method", "params")
+            if k in request}
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+    want = base64.b64encode(hashlib.sha256(raw).digest()).decode()
+    got = headers.get("content-digest", "")
+    if not hmac.compare_digest(f"sha-256=:{want}:", got):
+        raise AuthenticationError(
+            "content-digest does not match the request body -- payload altered in flight")
 
     marker = hashlib.sha256(presented).hexdigest()
-    if marker in _seen_jti:
+    now = time.time()
+    for seen, expiry in list(_seen_signatures.items()):
+        if expiry <= now:
+            del _seen_signatures[seen]
+    if marker in _seen_signatures:
         raise AuthenticationError(
             f"replayed request -- this exact signature was already used "
             f"(jti={claims.get('jti')}, created={created})")
-    _seen_jti.add(marker)
+    _seen_signatures[marker] = created + MAX_SIGNATURE_AGE
 
     if claims.get("exp", 0) < time.time():
         raise AuthenticationError("token expired")
@@ -371,8 +445,12 @@ def _sign_request(private_key, token, method, authority, path, body=None, covere
     return request
 
 
-def _make_jwt(header, payload):
-    return f"{_b64u(json.dumps(header).encode())}.{_b64u(json.dumps(payload).encode())}.demo-sig"
+def _make_jwt(header, payload, private_key):
+    """Create a compact EdDSA JWS for the self-contained executable demo."""
+    encoded_header = _b64u(json.dumps(header, separators=(",", ":"), sort_keys=True).encode())
+    encoded_payload = _b64u(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+    signing_input = f"{encoded_header}.{encoded_payload}".encode()
+    return f"{encoded_header}.{encoded_payload}.{_b64u(private_key.sign(signing_input))}"
 
 
 if __name__ == "__main__":
@@ -380,20 +458,32 @@ if __name__ == "__main__":
     agent_key = Ed25519PrivateKey.generate()
     agent_jwk = {"kty": "OKP", "crv": "Ed25519",
                  "x": _b64u(agent_key.public_key().public_bytes_raw())}
+    agent_issuer_key = Ed25519PrivateKey.generate()
+    person_server_key = Ed25519PrivateKey.generate()
+    agent_kid = "2026-06-26_53f"
+    person_kid = "2026-06-06T22:58:53.808Z_19f"
+    _jwks_overrides.update({
+        "https://vchirrav-eng.github.io/aauth_research": [{
+            "kid": agent_kid, "kty": "OKP", "crv": "Ed25519",
+            "x": _b64u(agent_issuer_key.public_key().public_bytes_raw())}],
+        "https://person.hello.coop": [{
+            "kid": person_kid, "kty": "OKP", "crv": "Ed25519",
+            "x": _b64u(person_server_key.public_key().public_bytes_raw())}],
+    })
     now = int(time.time())
 
     agent_token = _make_jwt(
-        {"alg": "EdDSA", "typ": "aa-agent+jwt", "kid": "2026-06-26_53f"},
+        {"alg": "EdDSA", "typ": "aa-agent+jwt", "kid": agent_kid},
         {"iss": "https://vchirrav-eng.github.io/aauth_research",
          "dwk": "aauth-agent.json",
          "sub": "aauth:local@vchirrav-eng.github.io",
          "jti": secrets.token_urlsafe(12), "cnf": {"jwk": agent_jwk},
-         "iat": now, "exp": now + 3600, "ps": "https://person.hello.coop"})
+          "iat": now, "exp": now + 3600, "ps": "https://person.hello.coop"}, agent_issuer_key)
 
     # What the person server returns after the human consents -- bound via
     # `cnf` to the SAME ephemeral key.
     auth_token = _make_jwt(
-        {"alg": "EdDSA", "typ": "aa-auth+jwt", "kid": "2026-06-06T22:58:53.808Z_19f"},
+        {"alg": "EdDSA", "typ": "aa-auth+jwt", "kid": person_kid},
         {"iss": "https://person.hello.coop", "dwk": "aauth-person.json",
          "jti": secrets.token_urlsafe(12),
          "sub": "sub_06ArJ53rsMNNtysCNieAP8Iu_7JR",
@@ -402,8 +492,8 @@ if __name__ == "__main__":
          "act": {"agent": "aauth:local@vchirrav-eng.github.io"},
          "scope": "whoami inbox notes", "tenant": "personal",
          "name": "Vis Chirravuri", "email": "vchirrav@gmail.com",
-         "email_verified": True, "cnf": {"jwk": agent_jwk},
-         "iat": now, "exp": now + 3600})
+          "email_verified": True, "cnf": {"jwk": agent_jwk},
+          "iat": now, "exp": now + 3600}, person_server_key)
 
     def req(rid, method, params, token, key=agent_key, path="/mcp"):
         """Build a signed MCP request, digest and all."""

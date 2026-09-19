@@ -4,8 +4,9 @@ Per-request **RFC 9421 HTTP message signatures**. Every call carries `Signature`
 `Signature-Input` and `Signature-Key`; the agent proves key possession *on each request* instead
 of handing over a reusable token.
 
-This example does **real Ed25519 verification** (`pip install cryptography`), so every ALLOW and
-DENY below is cryptographically genuine.
+This example does **real Ed25519 verification** (`pip install cryptography`): it verifies both
+the request signature and each issuer-signed JWT against that issuer's JWKS selected by `kid`.
+The executable demo injects ephemeral public keys; a deployment resolves the published JWKS URLs.
 
 ## What the MCP server learns
 - **Client:** the agent, from the `aa-agent+jwt` in `Signature-Key` (`iss` = its published
@@ -15,7 +16,7 @@ DENY below is cryptographically genuine.
 
 ## The check that changes everything
 Both token types carry `cnf.jwk`, naming an ephemeral public key. The server verifies the request
-signature **with that key**. So the JWT is useless to whoever steals it -- the demo replays a
+signature **with that key**, after verifying the JWT's own issuer signature. So the JWT is useless to whoever steals it -- the demo replays a
 valid auth token signed with an attacker's key and it fails. That single check is the whole
 bearer-vs-bound difference.
 
@@ -39,14 +40,15 @@ same key.
   `TRUSTED_PERSON_SERVERS`.
 
 ## Attacks shown, all genuinely rejected
-stolen token + attacker's key (`cnf` binding), byte-identical replay (signature cache), signature
+forged or unsigned JWT, stolen token + attacker's key (`cnf` binding), byte-identical replay (signature cache), signature
 captured for `/mcp` replayed at `/admin` (`@path` covered), body swapped `read_inbox` ->
 `send_payment` (`content-digest` covered), stale `created`, and an uncovered `signature-key`.
 
 ## Non-repudiation
 `proof` is the signature itself -- a durable artifact, re-verifiable later against the agent's
-published JWKS. This is the only mechanism in `src/` where the audit log holds evidence rather
-than an assertion.
+published JWKS. The sample uses an expiring in-process cache for readability; a multi-instance
+deployment must replace it with shared TTL storage such as Redis. This is the only mechanism in
+`src/` where the audit log holds evidence rather than an assertion.
 
 ## Delegation cannot escalate
 After a person consents, the **agent's own ceiling still applies** (`AGENT_POLICY`). The effective

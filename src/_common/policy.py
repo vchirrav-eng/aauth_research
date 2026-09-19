@@ -1,7 +1,7 @@
 """Shared authorization policy + MCP primitive registry.
 
 Every mechanism folder under `src/` authenticates differently but authorizes the
-same way, so the interesting difference between the five servers stays visible:
+same way, so the interesting difference between the six servers stays visible:
 only the *authentication* half changes.
 
 Two independent questions, per the README's four properties:
